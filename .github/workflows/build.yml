@@ -1,0 +1,113 @@
+name: Build VehFuncs AML
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NDK_VERSION: "27.2.12479018"
+  ANDROID_API: "21"
+  TARGET_ABI: "arm64-v8a"
+
+jobs:
+  build:
+    name: Build libVehFuncs64.so
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 📥 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: 📦 Clone AML Source
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/RusJJ/AndroidModLoader.git .aml-upstream
+
+          for f in \
+            mod/amlmod.h \
+            mod/iaml.h \
+            mod/logger.h \
+            mod/logger.cpp \
+            mod/config.h \
+            mod/config.cpp \
+            mod/interface.h
+          do
+            test -f ".aml-upstream/$f" || {
+              echo "::error::Missing $f"
+              exit 1
+            }
+          done
+
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 🤖 Install Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platforms;android-${{ env.ANDROID_API }}
+            ndk;${{ env.NDK_VERSION }}
+
+      - name: 🔍 Verify NDK
+        run: |
+          NDK_DIR="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+          test -x "$NDK_DIR/ndk-build"
+          "$NDK_DIR/ndk-build" --version
+
+      - name: 🛠 Build
+        run: |
+          NDK_DIR="$ANDROID_HOME/ndk/${{ env.NDK_VERSION }}"
+
+          "$NDK_DIR/ndk-build" \
+            NDK_PROJECT_PATH="$GITHUB_WORKSPACE" \
+            APP_BUILD_SCRIPT="$GITHUB_WORKSPACE/Android.mk" \
+            NDK_APPLICATION_MK="$GITHUB_WORKSPACE/Application.mk" \
+            APP_ABI="$TARGET_ABI" \
+            APP_PLATFORM=android-$ANDROID_API \
+            -j4
+
+      - name: ✅ Verify Output
+        run: |
+          test -f "libs/${TARGET_ABI}/libVehFuncs64.so"
+
+      - name: 📦 Prepare Artifact
+        run: |
+          mkdir -p staging
+          cp "libs/${TARGET_ABI}/libVehFuncs64.so" staging/
+
+      - name: ⬆ Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libVehFuncs64-${{ github.sha }}
+          path: staging/
+          retention-days: 30
+          compression-level: 0
+
+      - name: 🚀 Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: VehFuncs AML ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            staging/libVehFuncs64.so
